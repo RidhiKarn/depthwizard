@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+html,
+body {
+  height: 100%;
+}
+
+body {
+  background-color: #05070a;
+  color: #e6edf3;
+}
+
+/* Three.js canvas fills its container and shouldn't show a focus ring
+   even though we give it tabIndex for WASD key capture later. */
+canvas:focus {
+  outline: none;
+}

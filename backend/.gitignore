@@ -1,0 +1,22 @@
+__pycache__/
+*.pyc
+.venv/
+venv/
+env/
+data/uploads/
+data/outputs/
+!data/outputs/.gitkeep
+data/dem_cache/
+data/lora_adapter/
+data/users.db
+*.pt
+*.pth
+*.safetensors
+.pytest_cache/
+.env
+
+# Training artifacts (see training/README.md) — outputs of train_lora.py
+# and locally-built manifests, never meant to be committed.
+training/*.csv
+training/lora_adapter_out/
+training/__pycache__/

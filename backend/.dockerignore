@@ -1,0 +1,12 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+data/uploads/
+data/outputs/
+data/dem_cache/
+data/lora_adapter/
+data/users.db
+training/lora_adapter_out/
+training/*.csv
+.env

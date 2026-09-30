@@ -39,9 +39,17 @@ from pathlib import Path
 from typing import Optional
 
 import numpy as np
-import torch
 
 from app.config import settings
+
+# torch is intentionally NOT imported at module level: this module is
+# imported unconditionally at app startup (via routers/depth.py), and
+# `import torch` alone carries a large memory footprint before any
+# model is even loaded — a real problem on memory-capped hosts (see
+# app/services/depth_anything_model.py's docstring for the full story).
+# Since no trained LoRA adapter exists yet (is_lora_available() is
+# false by default), this module's torch usage should almost never
+# actually run in production — lazy imports below keep it that way.
 
 DEFAULT_TRAINING_RESOLUTION = 518  # must match train_lora.py's --resolution default
 
@@ -84,6 +92,7 @@ def _load_model() -> None:
                 "and drop the output directory there."
             )
 
+        import torch
         from peft import PeftModel
         from transformers import AutoModelForDepthEstimation
 
@@ -132,6 +141,7 @@ def run_inference(rgb: np.ndarray) -> LoraDepthResult:
     _load_model()
     assert _peft_model is not None and _device is not None and _training_resolution is not None
 
+    import torch
     from transformers import AutoImageProcessor
     from PIL import Image
 

@@ -38,9 +38,16 @@ import threading
 from dataclasses import dataclass
 
 import numpy as np
-import torch
 
 from app.config import settings
+
+# torch is intentionally NOT imported at module level — see
+# app/services/depth_anything_model.py's docstring: this module is
+# imported unconditionally at app startup (via routers/depth.py) for
+# the Stage 2e confidence ensemble, but that feature is opt-in
+# (include_confidence=true). Loading torch just by starting the app,
+# before anyone has asked for it, is exactly the memory problem that
+# broke this app's free-tier deployment.
 
 _model = None
 _transform = None
@@ -64,6 +71,8 @@ def _load_model() -> None:
     with _lock:
         if _model is not None:  # re-check inside the lock (another thread may have won the race)
             return
+
+        import torch
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         model = torch.hub.load("intel-isl/MiDaS", settings.midas_model_type)
@@ -93,6 +102,8 @@ def run_inference(rgb: np.ndarray) -> DepthResult:
     """
     _load_model()
     assert _model is not None and _transform is not None and _device is not None
+
+    import torch
 
     original_h, original_w = rgb.shape[:2]
     input_batch = _transform(rgb).to(_device)

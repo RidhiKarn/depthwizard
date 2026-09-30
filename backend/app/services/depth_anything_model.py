@@ -36,6 +36,7 @@ is expensive.
 
 from __future__ import annotations
 
+import gc
 import threading
 from dataclasses import dataclass
 
@@ -44,6 +45,15 @@ import torch
 from PIL import Image
 
 from app.config import settings
+
+# Deployment reality check (see README > Deployment): free-tier hosts
+# (Render's free web service, in particular) cap memory at 512MB, which
+# a full PyTorch + transformers stack can exceed just from its own
+# baseline footprint before any model is even loaded. torch.set_num_threads(1)
+# trims some of that (each BLAS/OMP thread pool allocates its own
+# buffers) — a real, measurable reduction, not a full fix for a
+# genuinely tight memory budget, but free and safe to always apply.
+torch.set_num_threads(1)
 
 HF_MODEL_IDS = {
     "vits": "LiheYoung/depth-anything-small-hf",
@@ -78,7 +88,18 @@ def _get_pipeline(variant: str):
         from transformers import pipeline as hf_pipeline
 
         device = 0 if torch.cuda.is_available() else -1
-        pipe = hf_pipeline(task="depth-estimation", model=HF_MODEL_IDS[variant], device=device)
+        # low_cpu_mem_usage=True avoids from_pretrained's default
+        # behavior of allocating the model twice (once with random
+        # init, then again while copying in the real weights) — cuts
+        # peak RAM during load by roughly the model's own weight size.
+        # Matters a lot on a memory-capped host (see module docstring's
+        # deployment note); free and behavior-neutral everywhere else.
+        pipe = hf_pipeline(
+            task="depth-estimation",
+            model=HF_MODEL_IDS[variant],
+            device=device,
+            model_kwargs={"low_cpu_mem_usage": True},
+        )
         _pipelines[variant] = pipe
         return pipe
 
@@ -101,26 +122,37 @@ def run_inference(rgb: np.ndarray, variant: str | None = None) -> DepthResult:
     pipe = _get_pipeline(variant)
 
     image = Image.fromarray(rgb)
-    output = pipe(image)
+    # no_grad: the pipeline already runs in eval mode, but this makes it
+    # explicit and guarantees no autograd graph gets retained — on a
+    # memory-capped host, an accidentally-kept graph is pure waste.
+    with torch.no_grad():
+        output = pipe(image)
 
-    # Use the raw "predicted_depth" tensor (model-native resolution, full
-    # float precision) rather than the pipeline's convenience "depth" PIL
-    # image, which is already quantized to uint8 — we want our own
-    # float32 normalization for the mesh/height_grid math, same as
-    # midas_model.py does.
-    depth_tensor = output["predicted_depth"]
-    if depth_tensor.dim() == 3:
-        depth_tensor = depth_tensor.squeeze(0)
+        # Use the raw "predicted_depth" tensor (model-native resolution,
+        # full float precision) rather than the pipeline's convenience
+        # "depth" PIL image, which is already quantized to uint8 — we
+        # want our own float32 normalization for the mesh/height_grid
+        # math, same as midas_model.py does.
+        depth_tensor = output["predicted_depth"]
+        if depth_tensor.dim() == 3:
+            depth_tensor = depth_tensor.squeeze(0)
 
-    original_h, original_w = rgb.shape[:2]
-    depth_tensor = torch.nn.functional.interpolate(
-        depth_tensor.unsqueeze(0).unsqueeze(0),
-        size=(original_h, original_w),
-        mode="bicubic",
-        align_corners=False,
-    ).squeeze()
+        original_h, original_w = rgb.shape[:2]
+        depth_tensor = torch.nn.functional.interpolate(
+            depth_tensor.unsqueeze(0).unsqueeze(0),
+            size=(original_h, original_w),
+            mode="bicubic",
+            align_corners=False,
+        ).squeeze()
 
-    depth = depth_tensor.cpu().numpy().astype(np.float32)
+        depth = depth_tensor.cpu().numpy().astype(np.float32)
+
+    # Drop the tensor references and reclaim memory immediately rather
+    # than waiting for Python's next GC cycle — each request's tensors
+    # are otherwise the kind of thing that accumulates right up to the
+    # memory ceiling under back-to-back requests.
+    del output, depth_tensor
+    gc.collect()
 
     d_min, d_max = float(depth.min()), float(depth.max())
     if d_max - d_min < 1e-6:

@@ -8,7 +8,17 @@ FROM python:3.12-slim
 
 WORKDIR /app
 
-# rasterio's manylinux wheel bundles GDAL, so no apt-get libgdal needed.
+# rasterio's manylinux wheel bundles GDAL itself, so no apt-get libgdal
+# needed — but it does NOT bundle libexpat, since the manylinux wheel
+# policy assumes that specific library is always present on the host.
+# python:3.12-slim strips it out (that's what "slim" means), which
+# crashed every request that touched rasterio with "ImportError:
+# libexpat.so.1: cannot open shared object file" — confirmed via actual
+# deploy logs, not a guess.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libexpat1 \
+    && rm -rf /var/lib/apt/lists/*
+
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 

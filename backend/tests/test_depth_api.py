@@ -18,16 +18,21 @@ from app.main import app
 client = TestClient(app)
 
 
-def _assert_openable_tif(url: str, *, expects_crs: bool):
-    """Downloads a raster export URL and verifies it's a real, openable
-    GeoTIFF — not just a string in the response — with or without a CRS
-    as expected for that case."""
+def _assert_openable_tif(data_uri: str, *, expects_crs: bool):
+    """Decodes an inline data: URI raster export and verifies it's a
+    real, openable GeoTIFF — not just a string in the response — with or
+    without a CRS as expected for that case. Outputs are embedded as
+    data: URIs rather than served from a saved file (see
+    app/routers/depth.py's _save_plain_tif/_save_geotiff docstrings) so
+    there's no separate URL to fetch here."""
+    import base64
+
     import rasterio
     from rasterio.io import MemoryFile
 
-    resp = client.get(url)
-    assert resp.status_code == 200
-    with MemoryFile(resp.content) as memfile, memfile.open() as src:
+    assert data_uri.startswith("data:image/tiff;base64,")
+    raw = base64.b64decode(data_uri.split(",", 1)[1])
+    with MemoryFile(raw) as memfile, memfile.open() as src:
         assert src.count == 1
         assert (src.crs is not None) == expects_crs
         data = src.read(1)
@@ -108,8 +113,8 @@ def test_estimate_png_end_to_end(auth_headers):
     assert body["is_georeferenced"] is False
     assert body["calibration_stage"] == "relative_uncalibrated"
     assert body["height_grid_resolution"] == len(body["height_grid"])
-    assert body["image_url"].startswith("/outputs/")
-    assert body["depth_heatmap_url"].startswith("/outputs/")
+    assert body["image_url"].startswith("data:image/png;base64,")
+    assert body["depth_heatmap_url"].startswith("data:image/png;base64,")
     assert body["confidence_heatmap_url"] is None
 
     # rDSM raster export (no CRS — this upload has no location data).
@@ -131,7 +136,7 @@ def test_estimate_with_confidence_ensemble(auth_headers):
     assert resp.status_code == 200, resp.text
     body = resp.json()
     assert body["confidence_heatmap_url"] is not None
-    assert body["confidence_heatmap_url"].startswith("/outputs/")
+    assert body["confidence_heatmap_url"].startswith("data:image/png;base64,")
 
 
 def test_estimate_geotiff_dem_calibration(auth_headers):

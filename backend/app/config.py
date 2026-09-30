@@ -43,10 +43,15 @@ class Settings(BaseSettings):
         return [origin.strip() for origin in raw.split(",") if origin.strip()]
 
     # --- Storage ---
+    # No upload_dir/output_dir: generated outputs (PNG heatmaps, GeoTIFF/
+    # .tif exports) are returned as inline base64 data: URIs in the API
+    # response instead of being saved to local disk — see
+    # app/routers/depth.py's _save_png/_save_plain_tif/_save_geotiff.
+    # Needed because Vercel serverless functions have no persistent
+    # filesystem shared between requests (a file saved during one request
+    # won't exist by the time a later request tries to fetch it).
     base_dir: Path = Path(__file__).resolve().parent.parent
     data_dir: Path = base_dir / "data"
-    upload_dir: Path = data_dir / "uploads"
-    output_dir: Path = data_dir / "outputs"
 
     # --- Depth model (Stage 1, primary backbone) ---
     # Depth Anything (Hugging Face `LiheYoung/depth-anything-*-hf`)
@@ -91,7 +96,3 @@ class Settings(BaseSettings):
 
 
 settings = Settings()
-
-# Ensure runtime directories exist at import time.
-settings.upload_dir.mkdir(parents=True, exist_ok=True)
-settings.output_dir.mkdir(parents=True, exist_ok=True)

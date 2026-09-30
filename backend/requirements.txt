@@ -1,3 +1,17 @@
+# Production/deploy dependencies ONLY — this is what actually ships to
+# Vercel (backend deployed as a Python serverless function there; see
+# vercel.json + api/index.py). Kept deliberately lean: Vercel's Python
+# functions have a bundle size ceiling, and every extra package here is
+# extra cold-start weight even if unused on the default request path.
+#
+# torch/transformers/peft/pysolar are NOT here on purpose — they power
+# opt-in bonus features (Stage 2e confidence ensemble, Stage 2b LoRA,
+# Stage 2c auto solar angle) that are either off by default or have no
+# trained adapter yet, and lazy-importing them (see midas_model.py,
+# lora_calibration.py) means a normal request never touches them anyway.
+# Local development/testing needs them to exercise those code paths —
+# see requirements-dev.txt, which layers them on top of this file.
+
 # --- Core API ---
 fastapi==0.115.0
 uvicorn[standard]==0.30.6
@@ -9,37 +23,23 @@ pydantic-settings==2.5.2
 # Stage 1's live serving path (app/services/depth_anything_model.py) uses
 # ONNX Runtime, NOT torch/transformers directly — a deliberate switch
 # after PyTorch's own baseline memory footprint (before any model is
-# even loaded) crashed the free-tier deployment ("Ran out of memory
-# (used over 512MB)"). See that module's docstring for the full story
-# and scripts/export_onnx.py for how the committed .onnx file was made.
+# even loaded) crashed a memory-capped free-tier deployment. See that
+# module's docstring for the full story and scripts/export_onnx.py for
+# how the committed .onnx file was made.
 onnxruntime==1.30.0
 opencv-python-headless==4.10.0.84
 numpy==1.26.4
 Pillow==10.4.0
 
-# torch/transformers are still needed — but only for the Stage 2e
-# confidence overlay (MiDaS, opt-in) and Stage 2b LoRA (no trained
-# adapter exists yet) — both now import torch LAZILY (inside functions,
-# not at module level) specifically so a plain image upload never
-# loads PyTorch into memory at all. Not scipy: confirmed unused, removed.
-torch==2.4.1
-torchvision==0.19.1
-timm==1.0.9              # required by MiDaS backbones
-
 # --- Geospatial (Stage 2a, wired but only exercised once GeoTIFFs are calibrated) ---
 rasterio==1.3.11
 pyproj==3.6.1
 
-# --- LoRA fine-tuning (Stage 2b, not yet active) ---
-peft==0.13.0
-transformers==4.44.2
-
-# --- Solar geometry for shadow cross-check (Stage 2c, not yet active) ---
-pysolar==0.11
-
 # --- Auth (Stage: product polish) ---
 PyJWT==2.15.1  # pure Python, no compiled deps — see app/services/auth.py
-
-# --- Dev / test ---
-pytest==8.3.3
-httpx==0.27.2
+# Postgres driver — used when DEPTHWIZARD_DATABASE_URL is set (Vercel
+# deploy: no local disk to persist SQLite between serverless
+# invocations, see app/services/auth.py's module docstring). Binary
+# wheel, no system libpq needed. Falls back to stdlib sqlite3 when unset
+# (local dev), so this is a no-op import cost until actually used.
+psycopg[binary]==3.2.3

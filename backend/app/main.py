@@ -6,7 +6,6 @@ from inside backend/ (with the venv from requirements.txt activated).
 """
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.staticfiles import StaticFiles
 
 from app.config import settings
 from app.routers import auth, depth, shadow
@@ -30,10 +29,6 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
-
-# Serves the saved input-image + depth-heatmap PNGs referenced by
-# DepthEstimateResponse.image_url / .depth_heatmap_url.
-app.mount("/outputs", StaticFiles(directory=str(settings.output_dir)), name="outputs")
 
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(depth.router, prefix=settings.api_prefix)

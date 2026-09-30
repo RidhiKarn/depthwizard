@@ -6,9 +6,20 @@ compiled/native dependency — chosen after this project already hit one
 painful native-dependency wall with mmcv, see README > "Why Metric3D v2
 isn't integrated") rather than pulling in SQLAlchemy/passlib/etc.
 
-Storage: a single-file SQLite database at settings.users_db_path. Fine
-for a hackathon-scale product; swapping to a real database later only
-touches this module.
+Storage: SQLite by default (a single file at settings.users_db_path) —
+fine for local dev and for any host with a persistent disk. When
+DEPTHWIZARD_DATABASE_URL is set (a postgres://... URL), this switches to
+Postgres instead, via psycopg. That's required on Vercel specifically:
+serverless functions have no shared/persistent filesystem between
+invocations, so a SQLite file would not reliably remember accounts from
+one request to the next. Vercel's own Storage tab can provision a free
+Postgres database (Neon-backed) and injects the connection string
+automatically — no separate account/service needed.
+
+Both backends share the same public functions (signup/login/etc.) and
+behavior; only _connect() and the handful of places that need
+dialect-specific SQL (placeholder style, autoincrement syntax,
+duplicate-key detection) branch on which one is active.
 
 Passwords: PBKDF2-HMAC-SHA256, 260,000 iterations (OWASP's current
 minimum recommendation for PBKDF2-SHA256), random 16-byte salt per user,
@@ -24,6 +35,7 @@ depth/shadow endpoints too — this isn't just a frontend-only gate.
 from __future__ import annotations
 
 import hashlib
+import os
 import secrets
 import sqlite3
 import time
@@ -35,6 +47,19 @@ import jwt
 from app.config import settings
 
 PBKDF2_ITERATIONS = 260_000
+
+# DEPTHWIZARD_DATABASE_URL is the canonical name to set. DATABASE_URL /
+# POSTGRES_URL are accepted too since that's what most Postgres
+# marketplace integrations (e.g. Neon, via Vercel's Storage tab) inject
+# automatically — one less manual rename step when wiring a new deploy.
+_DATABASE_URL = (
+    os.environ.get("DEPTHWIZARD_DATABASE_URL", "").strip()
+    or os.environ.get("DATABASE_URL", "").strip()
+    or os.environ.get("POSTGRES_URL", "").strip()
+)
+_USE_POSTGRES = _DATABASE_URL.startswith("postgres://") or _DATABASE_URL.startswith(
+    "postgresql://"
+)
 
 
 class AuthError(Exception):
@@ -59,7 +84,12 @@ class User:
     email: str
 
 
-def _connect() -> sqlite3.Connection:
+def _connect_sqlite() -> sqlite3.Connection:
+    # Only reached when DEPTHWIZARD_DATABASE_URL is unset (local dev, or
+    # any host with a real persistent disk) — never on Vercel, whose
+    # filesystem is read-only outside /tmp, so this mkdir is safe here
+    # but would NOT be safe done unconditionally at config.py import time.
+    settings.users_db_path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(settings.users_db_path)
     conn.execute(
         """
@@ -75,6 +105,25 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+def _connect_postgres():
+    import psycopg
+
+    conn = psycopg.connect(_DATABASE_URL)
+    conn.execute(
+        """
+        CREATE TABLE IF NOT EXISTS users (
+            id SERIAL PRIMARY KEY,
+            email TEXT UNIQUE NOT NULL,
+            password_hash TEXT NOT NULL,
+            salt TEXT NOT NULL,
+            created_at DOUBLE PRECISION NOT NULL
+        )
+        """
+    )
+    conn.commit()
+    return conn
+
+
 def _hash_password(password: str, salt: bytes) -> str:
     return hashlib.pbkdf2_hmac(
         "sha256", password.encode("utf-8"), salt, PBKDF2_ITERATIONS
@@ -85,12 +134,30 @@ def signup(email: str, password: str) -> User:
     email = email.strip().lower()
     salt = secrets.token_bytes(16)
     password_hash = _hash_password(password, salt)
+    created_at = time.time()
 
-    conn = _connect()
+    if _USE_POSTGRES:
+        import psycopg
+
+        conn = _connect_postgres()
+        try:
+            row = conn.execute(
+                "INSERT INTO users (email, password_hash, salt, created_at) "
+                "VALUES (%s, %s, %s, %s) RETURNING id",
+                (email, password_hash, salt.hex(), created_at),
+            ).fetchone()
+            conn.commit()
+            return User(id=row[0], email=email)
+        except psycopg.errors.UniqueViolation as exc:
+            raise EmailAlreadyRegistered(f"An account with email '{email}' already exists.") from exc
+        finally:
+            conn.close()
+
+    conn = _connect_sqlite()
     try:
         cursor = conn.execute(
             "INSERT INTO users (email, password_hash, salt, created_at) VALUES (?, ?, ?, ?)",
-            (email, password_hash, salt.hex(), time.time()),
+            (email, password_hash, salt.hex(), created_at),
         )
         conn.commit()
         return User(id=cursor.lastrowid, email=email)
@@ -102,13 +169,23 @@ def signup(email: str, password: str) -> User:
 
 def login(email: str, password: str) -> User:
     email = email.strip().lower()
-    conn = _connect()
-    try:
-        row = conn.execute(
-            "SELECT id, email, password_hash, salt FROM users WHERE email = ?", (email,)
-        ).fetchone()
-    finally:
-        conn.close()
+
+    if _USE_POSTGRES:
+        conn = _connect_postgres()
+        try:
+            row = conn.execute(
+                "SELECT id, email, password_hash, salt FROM users WHERE email = %s", (email,)
+            ).fetchone()
+        finally:
+            conn.close()
+    else:
+        conn = _connect_sqlite()
+        try:
+            row = conn.execute(
+                "SELECT id, email, password_hash, salt FROM users WHERE email = ?", (email,)
+            ).fetchone()
+        finally:
+            conn.close()
 
     if row is None:
         raise InvalidCredentials("Incorrect email or password.")
@@ -139,9 +216,16 @@ def decode_access_token(token: str) -> User:
 
 
 def get_user_by_id(user_id: int) -> Optional[User]:
-    conn = _connect()
-    try:
-        row = conn.execute("SELECT id, email FROM users WHERE id = ?", (user_id,)).fetchone()
-    finally:
-        conn.close()
+    if _USE_POSTGRES:
+        conn = _connect_postgres()
+        try:
+            row = conn.execute("SELECT id, email FROM users WHERE id = %s", (user_id,)).fetchone()
+        finally:
+            conn.close()
+    else:
+        conn = _connect_sqlite()
+        try:
+            row = conn.execute("SELECT id, email FROM users WHERE id = ?", (user_id,)).fetchone()
+        finally:
+            conn.close()
     return User(id=row[0], email=row[1]) if row else None

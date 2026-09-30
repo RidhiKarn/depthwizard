@@ -234,9 +234,21 @@ def _downsample_grid(normalized: np.ndarray, resolution: int) -> np.ndarray:
 
 
 def _save_png(rgb: np.ndarray, name: str) -> str:
-    path = settings.output_dir / name
-    Image.fromarray(rgb).save(path)
-    return f"/outputs/{name}"
+    """Returns the PNG as a data: URI embedded directly in the JSON
+    response, rather than writing to local disk and returning a
+    fetch-it-later URL. Serverless hosts (Vercel) have no persistent
+    filesystem shared between requests, so "save now, serve later" isn't
+    reliable there — see app/services/auth.py's module docstring for the
+    same constraint hitting the users DB. `name` is kept as a parameter
+    (used as the download filename hint by the frontend) even though it's
+    no longer a real path."""
+    import base64
+    import io
+
+    buf = io.BytesIO()
+    Image.fromarray(rgb).save(buf, format="PNG")
+    encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+    return f"data:image/png;base64,{encoded}"
 
 
 def _save_plain_tif(array: np.ndarray, name: str) -> str:
@@ -244,38 +256,55 @@ def _save_plain_tif(array: np.ndarray, name: str) -> str:
     standard raster (openable in any GIS tool or rasterio/GDAL) for
     images with no location data to embed. Values are relative depth
     [0, 1] for "relative_uncalibrated" results, or real meters (just
-    without a CRS) for "lora_calibrated" ones."""
-    import rasterio
+    without a CRS) for "lora_calibrated" ones. Returned as a data: URI —
+    see _save_png's docstring for why."""
+    import base64
 
-    path = settings.output_dir / name
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        height=array.shape[0],
-        width=array.shape[1],
-        count=1,
-        dtype="float32",
-    ) as dst:
-        dst.write(array.astype(np.float32), 1)
-    return f"/outputs/{name}"
+    import rasterio
+    from rasterio.io import MemoryFile
+
+    with MemoryFile() as memfile:
+        with memfile.open(
+            driver="GTiff",
+            height=array.shape[0],
+            width=array.shape[1],
+            count=1,
+            dtype="float32",
+            # Lossless compression: this response ships as a base64 data:
+            # URI embedded in the JSON body (no saved-file download URL —
+            # see this function's docstring), and Vercel caps a Function's
+            # response body at 4.5MB. Depth data is spatially smooth, so
+            # DEFLATE + the floating-point predictor shrinks it a lot with
+            # zero quality loss (still opens identically in any GIS tool).
+            compress="deflate",
+            predictor=3,
+        ) as dst:
+            dst.write(array.astype(np.float32), 1)
+        encoded = base64.b64encode(memfile.read()).decode("ascii")
+    return f"data:image/tiff;base64,{encoded}"
 
 
 def _save_geotiff(array: np.ndarray, transform_coeffs: tuple, crs: str, name: str) -> str:
+    """See _save_plain_tif's docstring — same data: URI approach, with a
+    real CRS + affine transform embedded for GIS software."""
+    import base64
+
     import rasterio
+    from rasterio.io import MemoryFile
     from rasterio.transform import Affine
 
-    path = settings.output_dir / name
-    with rasterio.open(
-        path,
-        "w",
-        driver="GTiff",
-        height=array.shape[0],
-        width=array.shape[1],
-        count=1,
-        dtype="float32",
-        crs=crs,
-        transform=Affine(*transform_coeffs),
-    ) as dst:
-        dst.write(array.astype(np.float32), 1)
-    return f"/outputs/{name}"
+    with MemoryFile() as memfile:
+        with memfile.open(
+            driver="GTiff",
+            height=array.shape[0],
+            width=array.shape[1],
+            count=1,
+            dtype="float32",
+            crs=crs,
+            transform=Affine(*transform_coeffs),
+            compress="deflate",  # see _save_plain_tif's docstring
+            predictor=3,
+        ) as dst:
+            dst.write(array.astype(np.float32), 1)
+        encoded = base64.b64encode(memfile.read()).decode("ascii")
+    return f"data:image/tiff;base64,{encoded}"

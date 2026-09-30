@@ -57,12 +57,24 @@ export default function ResultSummary({ result }) {
           Downloads
         </h3>
         <div className="flex flex-wrap gap-2">
-          <DownloadLink href={result.depth_heatmap_url} label="Depth map (PNG)" />
+          <DownloadLink
+            href={result.depth_heatmap_url}
+            label="Depth map (PNG)"
+            filename={`${result.job_id}_depth.png`}
+          />
           {result.dsm_geotiff_url && (
-            <DownloadLink href={result.dsm_geotiff_url} label="Elevation data (GeoTIFF)" />
+            <DownloadLink
+              href={result.dsm_geotiff_url}
+              label="Elevation data (GeoTIFF)"
+              filename={`${result.job_id}_dsm.tif`}
+            />
           )}
           {result.relative_dsm_tif_url && (
-            <DownloadLink href={result.relative_dsm_tif_url} label="Elevation data (.tif)" />
+            <DownloadLink
+              href={result.relative_dsm_tif_url}
+              label="Elevation data (.tif)"
+              filename={`${result.job_id}_rdsm.tif`}
+            />
           )}
         </div>
         <p className="mt-2 text-xs text-slate-500">
@@ -81,12 +93,12 @@ function isCalibrated(result) {
   );
 }
 
-function DownloadLink({ href, label }) {
+function DownloadLink({ href, label, filename }) {
   if (!href) return null;
   return (
     <a
       href={resolveAssetUrl(href)}
-      download
+      download={filename}
       className="rounded-lg bg-base-800 px-3 py-1.5 text-xs font-medium text-slate-200 hover:bg-base-700"
     >
       ⬇ {label}

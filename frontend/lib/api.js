@@ -117,10 +117,23 @@ export function estimateShadowHeights(
   return postForm("/api/shadow/estimate", formData, { token, signal });
 }
 
-/** Resolves a backend-relative URL (e.g. "/outputs/x.png") to an absolute one. */
+/**
+ * Resolves a backend-provided asset reference for use as an <img src> or
+ * download href. Depth/shadow results now embed outputs directly as
+ * data: URIs (see backend/app/routers/depth.py's _save_png/_save_*tif) —
+ * a serverless-hosted backend has no persistent disk to serve a
+ * fetch-it-later URL from — so those pass through unchanged. Kept for
+ * any absolute/relative URL shape too, in case that ever comes back.
+ */
 export function resolveAssetUrl(path) {
   if (!path) return path;
-  if (path.startsWith("http://") || path.startsWith("https://")) return path;
+  if (
+    path.startsWith("http://") ||
+    path.startsWith("https://") ||
+    path.startsWith("data:")
+  ) {
+    return path;
+  }
   return `${API_BASE_URL}${path}`;
 }
 
